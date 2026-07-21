@@ -33,6 +33,18 @@ All numbers are measured in this repository and reproducible with the commands s
 < 0.3% perplexity gate runs against real Llama weights (`scripts/validate_llama.py`,
 needs a ≥16 GB GPU). **Throughput target:** 2.1–2.8× vs dense FP16 decode.
 
+<p align="center">
+  <img src="docs/assets/kernel_speedup.png" alt="3.9x kernel speedup: serial vs warp-parallel" width="620">
+</p>
+
+<p align="center">
+  <img src="docs/assets/memory_compression.png" alt="3.98x KV memory compression vs FP16" width="620">
+</p>
+
+<p align="center">
+  <img src="docs/assets/snr_per_block.png" alt="Per-block scales gain +2 dB quantization SNR" width="620">
+</p>
+
 ---
 
 ## How It Works
@@ -66,27 +78,43 @@ One thread block per (batch, head); inside it:
 Multi-block output is verified numerically identical to single-concatenated-block
 attention, and empty pages are handled explicitly.
 
+### Architecture
+
+```mermaid
+flowchart TD
+    A["vLLM Attention Backend"]
+    B["vllm_integration.py<br/><b>INT4PagedKVCache</b><br/>write_block: quantize-on-write<br/>decode_attention: fused INT4 attention"]
+    C["ops.py — backend dispatch"]
+    D["quantize_int4_ref.py<br/>flash_decode_ref.py<br/>NumPy ground truth"]
+    E["csrc/flash_decode_int4.cu<br/>quantize kernel +<br/>warp-parallel fused attention"]
+    A --> B --> C
+    C -->|CPU path| D
+    C -->|GPU path| E
+    D <-.->|"parity: MAE 3e-08"| E
+    style B fill:#dbeafe,stroke:#0969da
+    style E fill:#dcfce7,stroke:#2da44e
 ```
-┌──────────────────────────────────────────────────────┐
-│              vLLM Attention Backend                  │
-└─────────────────────┬────────────────────────────────┘
-                      │
-┌─────────────────────▼────────────────────────────────┐
-│  vllm_integration.py — INT4PagedKVCache              │
-│  write_block(): quantize-on-write                    │
-│  decode_attention(): fused INT4 attention            │
-└─────────────────────┬────────────────────────────────┘
-                      │
-┌─────────────────────▼────────────────────────────────┐
-│  ops.py — dispatch (CUDA ext ⇄ NumPy reference)      │
-└──────────┬───────────────────────────┬───────────────┘
-           │                           │
-┌──────────▼─────────────┐  ┌──────────▼───────────────┐
-│ quantize_int4_ref.py   │  │ csrc/flash_decode_int4.cu│
-│ flash_decode_ref.py    │◄►│ quantize + fused         │
-│ (NumPy ground truth)   │  │ warp-parallel attention  │
-└────────────────────────┘  └──────────────────────────┘
+
+### Inside the fused kernel — one thread block per (batch, head)
+
+```mermaid
+flowchart LR
+    subgraph page["for each 256-token page"]
+        S["stage scales + zp·scale<br/>in shared memory"] --> W
+        subgraph W["warps stride over positions"]
+            L["lanes: partial q·dequant(k)<br/>dot product (one FMA each)"]
+            R["warp-shuffle reduce → logit"]
+            U["online update:<br/>m, l, lane-register acc"]
+            L --> R --> U
+        end
+    end
+    page --> M["log-sum-exp merge<br/>across 4 warps"] --> O["output = acc / l"]
+    style W fill:#fff8e1,stroke:#bc4c00
+    style M fill:#dcfce7,stroke:#2da44e
 ```
+
+No block-wide synchronization in the hot loop; the FP32 key matrix is never
+materialized — dequantization happens in registers during the dot product.
 
 ---
 
