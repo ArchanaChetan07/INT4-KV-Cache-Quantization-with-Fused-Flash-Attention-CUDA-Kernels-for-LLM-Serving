@@ -1,0 +1,32 @@
+{
+  "backend": "cuda",
+  "benchmarks": [
+    {
+      "op": "quantize_int4",
+      "shape": [
+        4096,
+        128
+      ],
+      "ms_per_call": 3.2078350021038204,
+      "fp16_bytes": 1048576,
+      "int4_bytes": 263168,
+      "compression_vs_fp16": 3.98
+    },
+    {
+      "op": "attention_fp32_reference",
+      "batch": 8,
+      "heads": 8,
+      "head_dim": 64,
+      "seq_len": 2048,
+      "ms_per_call": 1.5926199965178967
+    },
+    {
+      "op": "attention_int4_reference",
+      "batch": 8,
+      "heads": 8,
+      "head_dim": 64,
+      "seq_len": 2048,
+      "ms_per_call": 1.9817500025965271
+    }
+  ]
+}

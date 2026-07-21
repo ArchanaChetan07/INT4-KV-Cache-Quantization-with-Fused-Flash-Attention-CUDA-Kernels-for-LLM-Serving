@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel", "torch"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flash-decode-int4"
+version = "0.1.0"
+description = "Flash Decoding with INT4 KV: Fused online softmax + per-channel asymmetric INT4 quantization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Flash Decode Team", email = "team@example.com"}
+]
+keywords = ["cuda", "llm", "serving", "flash-attention", "int4-quantization", "decode"]
+
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "isort>=5.0",
+]
+cuda = [
+    "torch>=2.0.0",
+]
+llama = [
+    "transformers>=4.30.0",
+    "datasets>=2.0.0",
+]
+
+[tool.setuptools]
+packages = ["flash_decode_int4"]
+package-dir = {"flash_decode_int4" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--verbose --tb=short"

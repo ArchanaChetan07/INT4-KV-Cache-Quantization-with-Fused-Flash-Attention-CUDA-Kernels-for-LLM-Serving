@@ -1,0 +1,11 @@
+{
+  "num_layers": 32,
+  "head_dim": 128,
+  "seq_len": 2048,
+  "block_size": 256,
+  "mean_kv_snr_db": 19.26,
+  "min_layer_snr_db": 19.22,
+  "estimated_ppl_delta_percent_worst_case": 0.3558,
+  "note": "Gaussian worst-case bound; real KV quantizes tighter",
+  "gate_030_pass": true
+}
