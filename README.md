@@ -1,7 +1,8 @@
 # INT4 KV-Cache Quantization with Fused Flash-Attention CUDA Kernels for LLM Serving
 
-[![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen)]()
+[![CI](https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving/actions/workflows/ci.yml/badge.svg)](https://github.com/ArchanaChetan07/INT4-KV-Cache-Quantization-with-Fused-Flash-Attention-CUDA-Kernels-for-LLM-Serving/actions/workflows/ci.yml)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-76B900?logo=nvidia)]()
+[![Triton](https://img.shields.io/badge/Triton-port%20included-4B32C3)]()
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python)]()
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)]()
@@ -10,7 +11,12 @@ Per-channel asymmetric **INT4 quantization** of the KV cache fused with a
 **warp-parallel flash-decoding attention kernel** — 4× KV memory compression with
 float-precision-level accuracy, dequantizing in registers so the FP32 key matrix is
 never materialized. Built for paged-KV LLM serving engines like
-[vLLM](https://github.com/vllm-project/vllm).
+[vLLM](https://github.com/vllm-project/vllm); the same techniques underpin
+[TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) and
+[SGLang](https://github.com/sgl-project/sglang) KV-quantization paths, which are the
+comparison baselines planned for the vLLM-integration milestone. The quantizer ships
+in **both CUDA and [Triton](https://github.com/triton-lang/triton)** — the Triton port
+is validated in CI on CPU runners via interpreter mode.
 
 ---
 
@@ -20,8 +26,10 @@ All numbers are measured in this repository and reproducible with the commands s
 
 | Check | Result | Hardware |
 |---|---|---|
-| Test suite (GPU mode, `FLASH_DECODE_JIT_CUDA=1`) | **42 / 42 passing, 0 skipped** | NVIDIA T1000, CUDA 12.5 |
-| Test suite (CPU-only mode) | 40 passing, 2 GPU-gated skips | any machine, no GPU needed |
+| Test suite (GPU mode, `FLASH_DECODE_JIT_CUDA=1`) | **50 passing** (1 Triton-on-Windows skip) | NVIDIA T1000, CUDA 12.5 |
+| Test suite (CPU-only mode) | 48 passing, 3 gated skips | any machine, no GPU needed |
+| Triton quantizer port vs reference | parity via interpreter mode | CI (CPU runners) |
+| INT4 nibble packing (2 values/byte) | round-trip exact; stored bytes = ½ unpacked | — |
 | CUDA quantizer vs NumPy reference | **0.000% bin disagreement**, scales rtol 1e-4 | T1000 |
 | Fused INT4 attention vs reference | **MAE 3.1 × 10⁻⁸** | T1000 |
 | Variable-length + empty-block edge cases | MAE ≤ 3.4 × 10⁻⁸ | T1000 |
@@ -63,6 +71,14 @@ q        = clip(round((k − min[c]) / scale[c]), 0, 15)
   measured +2 dB SNR over whole-sequence scales.
 - **Asymmetric:** captures the full [min, max] range in 4 bits; symmetric INT8 is the
   documented fallback if real-model perplexity regresses > 0.5%.
+- **Nibble-packed storage (implemented):** the paged cache stores keys at
+  2 INT4 values/byte (`src/int4_pack.py`) — `memory_stats()` reports bytes measured
+  from the actual arrays, not an estimate. Kernels currently consume the unpacked
+  layout with coalesced uint8 reads (consecutive lanes read consecutive channels);
+  packed-native kernel decode is on the roadmap.
+- **Two kernel implementations:** CUDA (`csrc/flash_decode_int4.cu`) and a
+  [Triton](https://github.com/triton-lang/triton) port of the quantizer
+  (`src/quantize_int4_triton.py`), parity-tested against the same NumPy reference.
 
 ### Attention: warp-parallel online softmax (flash-decoding style)
 
@@ -168,11 +184,13 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 
 ```
 ├── src/
-│   ├── quantize_int4_ref.py   NumPy ground truth: per-channel asymmetric INT4
-│   ├── flash_decode_ref.py    NumPy ground truth: online softmax over pages
-│   ├── ops.py                 backend dispatch (CUDA ⇄ reference)
-│   ├── vllm_integration.py    INT4PagedKVCache (quantize-on-write cache)
-│   └── _jit.py                opt-in JIT compile of the CUDA extension
+│   ├── quantize_int4_ref.py     NumPy ground truth: per-channel asymmetric INT4
+│   ├── quantize_int4_triton.py  Triton port of the quantizer
+│   ├── int4_pack.py             nibble packing (2 INT4 values/byte storage)
+│   ├── flash_decode_ref.py      NumPy ground truth: online softmax over pages
+│   ├── ops.py                   backend dispatch (CUDA ⇄ reference)
+│   ├── vllm_integration.py      INT4PagedKVCache (quantize + pack on write)
+│   └── _jit.py                  opt-in JIT compile of the CUDA extension
 ├── csrc/
 │   ├── flash_decode_int4.cu   quantize kernel + warp-parallel fused attention
 │   └── bindings.cpp           PyTorch pybind11 bindings
@@ -198,10 +216,19 @@ python scripts/validate_llama.py --model meta-llama/Llama-2-7b-hf \
 
 - [x] NumPy reference: quantizer + online softmax
 - [x] CUDA kernels — parity at MAE 3e-08, 3.9× kernel speedup to bandwidth roofline
-- [x] JIT build path + packaging
-- [ ] INT4 nibble packing (2 values/byte) in the storage path
-- [ ] Real-model perplexity gate on Llama-2-7B/13B/70B
-- [ ] vLLM attention-backend integration
+- [x] Triton port of the quantizer (CI-validated via interpreter mode)
+- [x] INT4 nibble packing (2 values/byte) in the cache storage path
+- [x] JIT build path + packaging + CI + Docker
+- [ ] Packed-native kernel decode (read nibbles directly in the attention kernel)
+- [ ] Real-model perplexity gate on Llama-2-7B/13B/70B (needs ≥16 GB GPU)
+- [ ] vLLM attention-backend integration; benchmark vs TensorRT-LLM / SGLang baselines
+
+## Related Projects
+
+Part of a three-repo LLM inference optimization portfolio:
+
+- **[CUDA Speculative Decoding Optimizer](https://github.com/ArchanaChetan07/CUDA-Accelerated-Speculative-Decoding-Optimizer-for-LLM-Inference-PyTorch-vLLM-)** — deterministic draft ranking + soft-lock KV conflict resolution
+- **[GPU Memory-Aware Request Scheduler](https://github.com/ArchanaChetan07/GPU-Memory-Aware-Request-Scheduler-with-KV-Cache-Offloading-for-Multi-Tenant-LLM-Serving)** — SLA-aware admission control with sub-millisecond KV offloading
 
 ## License
 

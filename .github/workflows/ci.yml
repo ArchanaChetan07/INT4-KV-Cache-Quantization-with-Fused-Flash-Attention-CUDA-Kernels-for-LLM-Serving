@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-cpu:
+    name: CPU test suite (reference backend)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install CPU-only dependencies
+        run: |
+          pip install numpy pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Run tests (GPU-gated tests skip automatically)
+        run: pytest tests/ -v
+
+  test-triton-interpreter:
+    name: Triton kernel (interpreter mode, no GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies + Triton
+        run: |
+          pip install numpy pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install triton
+      - name: Validate Triton quantizer numerics via interpreter
+        env:
+          TRITON_INTERPRET: "1"
+        run: pytest tests/test_triton_quantize.py -v

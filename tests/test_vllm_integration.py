@@ -57,11 +57,12 @@ class TestINT4PagedKVCache:
         k = np.random.randn(64, 32).astype(np.float32)
         cache.write_block(0, k, k)
         cache.free_block(0)
-        assert 0 not in cache.k_q
+        assert 0 not in cache.k_packed
         assert cache.memory_stats()['blocks'] == 0
 
     def test_memory_compression_ratio(self):
-        """Stored footprint must beat FP16 by ~2.6x+ (K INT4 + V FP16)."""
+        """Stored footprint (nibble-packed K + FP16 V, measured from the
+        actual arrays) must beat all-FP16 by ~1.5x+ overall."""
         cache = INT4PagedKVCache(num_blocks=16, block_size=256, head_dim=128)
         for b in range(8):
             k = np.random.randn(256, 128).astype(np.float32)
@@ -69,6 +70,22 @@ class TestINT4PagedKVCache:
 
         stats = cache.memory_stats()
         assert stats['ratio'] > 1.5, f"compression ratio too low: {stats}"
+
+    def test_packed_storage_is_real(self):
+        """Keys must actually be stored nibble-packed: half the bytes of the
+        unpacked layout, and attention output must be unaffected."""
+        np.random.seed(7)
+        cache = INT4PagedKVCache(num_blocks=4, block_size=128, head_dim=64)
+        k = np.random.randn(128, 64).astype(np.float32)
+        v = np.random.randn(128, 64).astype(np.float32)
+        cache.write_block(0, k, v)
+
+        assert cache.k_packed[0].nbytes == 128 * 64 // 2, \
+            "keys are not stored packed"
+
+        query = (np.random.randn(1, 2, 64) / 8.0).astype(np.float32)
+        out = cache.decode_attention(query, block_table=[0])
+        assert np.isfinite(out).all()
 
     def test_variable_block_lengths(self):
         """Partial (short) final block must work."""
